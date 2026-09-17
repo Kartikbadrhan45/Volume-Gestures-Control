@@ -1,0 +1,107 @@
+import os
+import time
+import urllib.request
+from math import hypot
+import cv2
+import numpy as np
+
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+
+# 1. Automatic Model Download
+MODEL_FILE = "hand_landmarker.task"
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+
+if not os.path.exists(MODEL_FILE):
+    print("Downloading model...")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_FILE)
+
+# 2. Pycaw Setup (Using Scalar Volume 0.0 to 1.0)
+devices = AudioUtilities.GetSpeakers()
+try:
+    volume = devices.EndpointVolume
+except AttributeError:
+    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    volume = cast(interface, POINTER(IAudioEndpointVolume))
+
+# 3. MediaPipe Setup
+base_options = python.BaseOptions(model_asset_path=MODEL_FILE)
+options = vision.HandLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.VIDEO,
+    num_hands=1
+)
+landmarker = vision.HandLandmarker.create_from_options(options)
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (0, 17), (17, 18), (18, 19), (19, 20)
+]
+
+cap = cv2.VideoCapture(0)
+volBar = 400
+volPer = 0
+
+while cap.isOpened():
+    success, img = cap.read()
+    if not success:
+        break
+
+    h, w, _ = img.shape
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+    frame_timestamp_ms = int(time.time() * 1000)
+
+    detection_result = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
+    lmList = []
+
+    if detection_result.hand_landmarks:
+        hand_landmarks = detection_result.hand_landmarks[0]
+        
+        for idx, lm in enumerate(hand_landmarks):
+            cx, cy = int(lm.x * w), int(lm.y * h)
+            lmList.append([idx, cx, cy])
+
+        for connection in HAND_CONNECTIONS:
+            start_point = lmList[connection[0]]
+            end_point = lmList[connection[1]]
+            cv2.line(img, (start_point[1], start_point[2]), (end_point[1], end_point[2]), (0, 255, 0), 2)
+
+    if lmList:
+        x1, y1 = lmList[4][1], lmList[4][2]
+        x2, y2 = lmList[8][1], lmList[8][2]
+
+        cv2.circle(img, (x1, y1), 8, (255, 0, 0), cv2.FILLED)
+        cv2.circle(img, (x2, y2), 8, (255, 0, 0), cv2.FILLED)
+        cv2.line(img, (x1, y1), (x2, y2), (255, 0, 0), 3)
+
+        length = hypot(x2 - x1, y2 - y1)
+
+        # Map distance (20px to 180px) directly to volume ratio (0.0 to 1.0)
+        vol_scalar = np.interp(length, [20, 180], [0.0, 1.0])
+        volBar = np.interp(length, [20, 180], [400, 150])
+        volPer = np.interp(length, [20, 180], [0, 100])
+
+        # Set Master Volume (0.0 = Mute, 1.0 = 100%)
+        volume.SetMasterVolumeLevelScalar(float(vol_scalar), None)
+
+    # Draw Volume Bar UI on Video Stream
+    cv2.rectangle(img, (50, 150), (85, 400), (0, 255, 0), 3)
+    cv2.rectangle(img, (50, int(volBar)), (85, 400), (0, 255, 0), cv2.FILLED)
+    cv2.putText(img, f'{int(volPer)} %', (40, 450), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 255, 0), 3)
+
+    cv2.imshow('Gesture Volume Control', img)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+landmarker.close()
