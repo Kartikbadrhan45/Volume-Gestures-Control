@@ -1,0 +1,14 @@
+mport os
+import time
+import urllib.request
+from math import hypot
+import cv2
+import numpy as np
+
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
